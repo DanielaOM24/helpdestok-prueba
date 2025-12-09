@@ -5,160 +5,203 @@ import { getTokenFromRequest, verifyToken } from '@/lib/auth';
 import { sendEmail, getEmailTemplate } from '@/lib/email';
 
 export async function GET(
-  request: NextRequest,
-  { params }: { params: { id: string } }
+    request: NextRequest,
+    { params }: { params: Promise<{ id: string }> | { id: string } }
 ) {
-  try {
-    await connectDB();
+    try {
+        await connectDB();
 
-    const token = getTokenFromRequest(request);
-    if (!token) {
-      return NextResponse.json({ message: 'No autorizado' }, { status: 401 });
+        const token = getTokenFromRequest(request);
+        if (!token) {
+            return NextResponse.json({ message: 'No autorizado' }, { status: 401 });
+        }
+
+        const payload = verifyToken(token);
+        if (!payload) {
+            return NextResponse.json({ message: 'Token inválido' }, { status: 401 });
+        }
+
+        // Manejar params que puede ser Promise en Next.js 15+
+        const resolvedParams = params instanceof Promise ? await params : params;
+        const ticketId = resolvedParams.id;
+
+        if (!ticketId) {
+            return NextResponse.json(
+                { message: 'ID de ticket no válido' },
+                { status: 400 }
+            );
+        }
+
+        const ticket = await Ticket.findById(ticketId)
+            .populate('createdBy', 'name email')
+            .populate('assignedTo', 'name email');
+
+        if (!ticket) {
+            return NextResponse.json(
+                { message: 'Ticket no encontrado' },
+                { status: 404 }
+            );
+        }
+
+        // Comparar correctamente los IDs
+        const createdById = ticket.createdBy._id ? ticket.createdBy._id.toString() : ticket.createdBy.toString();
+
+        if (payload.role === 'client' && createdById !== payload.userId) {
+            return NextResponse.json(
+                { message: 'No autorizado para ver este ticket' },
+                { status: 403 }
+            );
+        }
+
+        return NextResponse.json(ticket);
+    } catch (error) {
+        console.error('Error obteniendo ticket:', error);
+        return NextResponse.json(
+            { message: 'Error al obtener ticket', error: String(error) },
+            { status: 500 }
+        );
     }
-
-    const payload = verifyToken(token);
-    if (!payload) {
-      return NextResponse.json({ message: 'Token inválido' }, { status: 401 });
-    }
-
-    const ticket = await Ticket.findById(params.id)
-      .populate('createdBy', 'name email')
-      .populate('assignedTo', 'name email');
-
-    if (!ticket) {
-      return NextResponse.json(
-        { message: 'Ticket no encontrado' },
-        { status: 404 }
-      );
-    }
-
-    if (payload.role === 'client' && ticket.createdBy.toString() !== payload.userId) {
-      return NextResponse.json(
-        { message: 'No autorizado para ver este ticket' },
-        { status: 403 }
-      );
-    }
-
-    return NextResponse.json(ticket);
-  } catch (error) {
-    console.error('Error obteniendo ticket:', error);
-    return NextResponse.json(
-      { message: 'Error al obtener ticket' },
-      { status: 500 }
-    );
-  }
 }
 
 export async function PUT(
-  request: NextRequest,
-  { params }: { params: { id: string } }
+    request: NextRequest,
+    { params }: { params: Promise<{ id: string }> | { id: string } }
 ) {
-  try {
-    await connectDB();
+    try {
+        await connectDB();
 
-    const token = getTokenFromRequest(request);
-    if (!token) {
-      return NextResponse.json({ message: 'No autorizado' }, { status: 401 });
+        const token = getTokenFromRequest(request);
+        if (!token) {
+            return NextResponse.json({ message: 'No autorizado' }, { status: 401 });
+        }
+
+        const payload = verifyToken(token);
+        if (!payload) {
+            return NextResponse.json(
+                { message: 'Token inválido' },
+                { status: 401 }
+            );
+        }
+
+        const { title, description, status, priority, assignedTo } = await request.json();
+
+        const resolvedParams = params instanceof Promise ? await params : params;
+        const ticketId = resolvedParams.id;
+
+        const ticket = await Ticket.findById(ticketId)
+            .populate('createdBy', 'name email');
+
+        if (!ticket) {
+            return NextResponse.json(
+                { message: 'Ticket no encontrado' },
+                { status: 404 }
+            );
+        }
+
+        // Clientes solo pueden editar título y descripción de sus propios tickets
+        if (payload.role === 'client') {
+            const createdById = ticket.createdBy._id
+                ? ticket.createdBy._id.toString()
+                : ticket.createdBy.toString();
+
+            if (createdById !== payload.userId) {
+                return NextResponse.json(
+                    { message: 'No autorizado para editar este ticket' },
+                    { status: 403 }
+                );
+            }
+
+            // Clientes solo pueden editar título y descripción
+            if (title) ticket.title = title;
+            if (description) ticket.description = description;
+        } else {
+            // Agentes pueden editar todo
+            if (title) ticket.title = title;
+            if (description) ticket.description = description;
+            if (status) ticket.status = status;
+            if (priority) ticket.priority = priority;
+            if (assignedTo) ticket.assignedTo = assignedTo;
+        }
+
+        const previousStatus = ticket.status;
+
+        await ticket.save();
+
+        const updatedTicket = await Ticket.findById(ticket._id)
+            .populate('createdBy', 'name email')
+            .populate('assignedTo', 'name email');
+
+        if (status === 'closed' && previousStatus !== 'closed' && ticket.createdBy) {
+            const user = ticket.createdBy as any;
+            const emailTemplate = getEmailTemplate(
+                'closed',
+                ticket.title,
+                ticket._id.toString()
+            );
+            await sendEmail({
+                to: user.email,
+                subject: emailTemplate.subject,
+                html: emailTemplate.html,
+            });
+        }
+
+        return NextResponse.json(updatedTicket);
+    } catch (error) {
+        console.error('Error actualizando ticket:', error);
+        return NextResponse.json(
+            { message: 'Error al actualizar ticket' },
+            { status: 500 }
+        );
     }
-
-    const payload = verifyToken(token);
-    if (!payload || payload.role !== 'agent') {
-      return NextResponse.json(
-        { message: 'Solo los agentes pueden actualizar tickets' },
-        { status: 403 }
-      );
-    }
-
-    const { status, priority, assignedTo } = await request.json();
-
-    const ticket = await Ticket.findById(params.id)
-      .populate('createdBy', 'name email');
-
-    if (!ticket) {
-      return NextResponse.json(
-        { message: 'Ticket no encontrado' },
-        { status: 404 }
-      );
-    }
-
-    const previousStatus = ticket.status;
-
-    if (status) ticket.status = status;
-    if (priority) ticket.priority = priority;
-    if (assignedTo) ticket.assignedTo = assignedTo;
-
-    await ticket.save();
-
-    const updatedTicket = await Ticket.findById(ticket._id)
-      .populate('createdBy', 'name email')
-      .populate('assignedTo', 'name email');
-
-    if (status === 'closed' && previousStatus !== 'closed' && ticket.createdBy) {
-      const user = ticket.createdBy as any;
-      const emailTemplate = getEmailTemplate(
-        'closed',
-        ticket.title,
-        ticket._id.toString()
-      );
-      await sendEmail({
-        to: user.email,
-        subject: emailTemplate.subject,
-        html: emailTemplate.html,
-      });
-    }
-
-    return NextResponse.json(updatedTicket);
-  } catch (error) {
-    console.error('Error actualizando ticket:', error);
-    return NextResponse.json(
-      { message: 'Error al actualizar ticket' },
-      { status: 500 }
-    );
-  }
 }
 
 export async function DELETE(
-  request: NextRequest,
-  { params }: { params: { id: string } }
+    request: NextRequest,
+    { params }: { params: Promise<{ id: string }> | { id: string } }
 ) {
-  try {
-    await connectDB();
+    try {
+        await connectDB();
 
-    const token = getTokenFromRequest(request);
-    if (!token) {
-      return NextResponse.json({ message: 'No autorizado' }, { status: 401 });
+        const token = getTokenFromRequest(request);
+        if (!token) {
+            return NextResponse.json({ message: 'No autorizado' }, { status: 401 });
+        }
+
+        const payload = verifyToken(token);
+        if (!payload) {
+            return NextResponse.json({ message: 'Token inválido' }, { status: 401 });
+        }
+
+        const resolvedParams = params instanceof Promise ? await params : params;
+        const ticketId = resolvedParams.id;
+
+        const ticket = await Ticket.findById(ticketId);
+
+        if (!ticket) {
+            return NextResponse.json(
+                { message: 'Ticket no encontrado' },
+                { status: 404 }
+            );
+        }
+
+        const createdById = ticket.createdBy._id ? ticket.createdBy._id.toString() : ticket.createdBy.toString();
+
+        if (payload.role !== 'agent' && createdById !== payload.userId) {
+            return NextResponse.json(
+                { message: 'No autorizado para eliminar este ticket' },
+                { status: 403 }
+            );
+        }
+
+        await Ticket.findByIdAndDelete(ticketId);
+
+        return NextResponse.json({ message: 'Ticket eliminado' });
+    } catch (error) {
+        console.error('Error eliminando ticket:', error);
+        return NextResponse.json(
+            { message: 'Error al eliminar ticket' },
+            { status: 500 }
+        );
     }
-
-    const payload = verifyToken(token);
-    if (!payload) {
-      return NextResponse.json({ message: 'Token inválido' }, { status: 401 });
-    }
-
-    const ticket = await Ticket.findById(params.id);
-
-    if (!ticket) {
-      return NextResponse.json(
-        { message: 'Ticket no encontrado' },
-        { status: 404 }
-      );
-    }
-
-    if (payload.role !== 'agent' && ticket.createdBy.toString() !== payload.userId) {
-      return NextResponse.json(
-        { message: 'No autorizado para eliminar este ticket' },
-        { status: 403 }
-      );
-    }
-
-    await Ticket.findByIdAndDelete(params.id);
-
-    return NextResponse.json({ message: 'Ticket eliminado' });
-  } catch (error) {
-    console.error('Error eliminando ticket:', error);
-    return NextResponse.json(
-      { message: 'Error al eliminar ticket' },
-      { status: 500 }
-    );
-  }
 }
 

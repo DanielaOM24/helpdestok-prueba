@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 
-const MONGODB_URI = process.env.MONGODB_URI;
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/helpdeskpro';
 
 if (!MONGODB_URI) {
     throw new Error('Por favor define la variable de entorno MONGODB_URI en .env.local');
@@ -31,15 +31,21 @@ async function connectDB() {
             bufferCommands: false,
         };
 
-        cached.promise = mongoose.connect(MONGODB_URI as string, opts).then((mongoose) => {
+        cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongoose) => {
+            console.log('✅ MongoDB conectado exitosamente');
             return mongoose;
+        }).catch((error) => {
+            console.error('❌ Error conectando a MongoDB:', error.message);
+            cached.promise = null;
+            throw error;
         });
     }
 
     try {
         cached.conn = await cached.promise;
-    } catch (e) {
+    } catch (e: any) {
         cached.promise = null;
+        console.error('❌ Error en conexión MongoDB:', e?.message || e);
         throw e;
     }
 

@@ -7,6 +7,8 @@ export interface CreateTicketData {
 }
 
 export interface UpdateTicketData {
+    title?: string;
+    description?: string;
     status?: 'open' | 'in_progress' | 'resolved' | 'closed';
     priority?: 'low' | 'medium' | 'high';
     assignedTo?: string;
